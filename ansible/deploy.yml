@@ -1,0 +1,96 @@
+---
+- hosts: webservers
+  become: yes
+  vars:
+    app_dir: /var/www/jobert
+    ansible_ssh_common_args: '-o ConnectTimeout=30 -o ServerAliveInterval=60'
+
+  pre_tasks:
+    - name: Ensure SSH connection is working
+      ping:
+
+  tasks:
+    - name: Check if app directory exists
+      stat:
+        path: "{{ app_dir }}"
+      register: app_dir_check
+
+    - name: Check if git repository exists
+      stat:
+        path: "{{ app_dir }}/.git"
+      register: repo_check
+
+    - name: Initialize git repository if it doesn't exist
+      command:
+        cmd: git init
+        chdir: "{{ app_dir }}"
+      when: app_dir_check.stat.exists and not repo_check.stat.exists
+
+    - name: Configure Git to trust the directory
+      command:
+        cmd: git config --global --add safe.directory {{ app_dir }}
+        chdir: "{{ app_dir }}"
+      when: app_dir_check.stat.exists
+
+    - name: Add remote origin
+      command:
+        cmd: git remote add origin git@github.com:sn0rp/jobert2.git
+        chdir: "{{ app_dir }}"
+      when: app_dir_check.stat.exists and not repo_check.stat.exists
+
+    - name: Pull latest changes if repository exists
+      git:
+        repo: git@github.com:sn0rp/jobert2.git
+        dest: "{{ app_dir }}"
+        version: master
+        update: yes
+      when: app_dir_check.stat.exists
+      async: 300
+      poll: 5
+
+    - name: Debug git result
+      debug:
+        var: git_result
+      when: git_result is defined
+
+    - name: Run migrations
+      command:
+        cmd: php migrate.php up
+        chdir: "{{ app_dir }}"
+      register: migration_output
+
+    - name: Display migration output
+      debug:
+        var: migration_output.stdout_lines
+
+    - name: Set correct permissions
+      file:
+        path: "{{ app_dir }}"
+        owner: www-data
+        group: www-data
+        recurse: yes
+
+    - name: Debug - Check web directory permissions
+      shell: ls -la {{ app_dir }}
+      register: dir_permissions
+
+    - name: Debug - Display web directory permissions
+      debug:
+        var: dir_permissions.stdout_lines
+
+    - name: Ensure Nginx user has execute permissions for directories
+      file:
+        path: "{{ item }}"
+        mode: "a+x"
+      with_items:
+        - /var
+        - /var/www
+        - "{{ app_dir }}"
+
+    - name: Restart PHP-FPM
+      shell: "systemctl restart php*-fpm.service"
+
+    - name: Reload Nginx
+      service:
+        name: nginx
+        state: reloaded

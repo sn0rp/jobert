@@ -1,0 +1,8 @@
+/vendor
+/node_modules
+.env
+*.log
+*.sqlite
+*.db
+init_db.php
+ansible/inventory.ini

@@ -1,0 +1,106 @@
+---
+- hosts: webservers
+  become: yes
+  vars:
+    certbot_email: "{{ certbot_email }}"
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install required packages
+      apt:
+        name:
+          - nginx
+          - php-fpm
+          - php-sqlite3
+          - certbot
+          - python3-certbot-nginx
+          - git
+          - sqlite3
+        state: present
+
+    - name: Allow HTTP traffic
+      ufw:
+        rule: allow
+        port: '80'
+        proto: tcp
+
+    - name: Allow HTTPS traffic
+      ufw:
+        rule: allow
+        port: '443'
+        proto: tcp
+
+    - name: Enable UFW
+      ufw:
+        state: enabled
+
+    - name: Create web directory
+      file:
+        path: /var/www/jobert
+        state: directory
+        mode: '0755'
+
+    - name: Create and initialize SQLite database
+      shell: |
+        touch /var/www/jobert/jobert.db
+        sqlite3 /var/www/jobert/jobert.db "VACUUM;"
+      args:
+        creates: /var/www/jobert/jobert.db
+
+    - name: Set correct permissions for database file
+      file:
+        path: /var/www/jobert/jobert.db
+        owner: www-data
+        group: www-data
+        mode: '0664'
+
+    - name: Configure Nginx
+      template:
+        src: nginx.conf.j2
+        dest: /etc/nginx/sites-available/jobert
+      notify: Reload Nginx
+
+    - name: Enable Nginx site
+      file:
+        src: /etc/nginx/sites-available/jobert
+        dest: /etc/nginx/sites-enabled/jobert
+        state: link
+      notify: Reload Nginx
+
+    - name: Remove default Nginx site
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+      notify: Reload Nginx
+
+    - name: Set up SSL with Let's Encrypt
+      command: certbot --nginx -d jobert.org -d www.jobert.org --non-interactive --agree-tos --email {{ certbot_email }} --redirect
+
+    - name: Add Certbot renewal to crontab
+      cron:
+        name: "Certbot Renewal"
+        special_time: monthly
+        job: "/usr/bin/certbot renew --quiet --nginx"
+
+    - name: Disable SSH password authentication
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^PasswordAuthentication'
+        line: 'PasswordAuthentication no'
+      notify: Restart SSH
+
+    - name: Add GitHub to known hosts
+      ansible.builtin.known_hosts:
+        name: github.com
+        key: "{{ lookup('pipe', 'ssh-keyscan -t ed25519 github.com') }}"
+        state: present
+
+  handlers:
+    - name: Reload Nginx
+      service: name=nginx state=reloaded
+    - name: Restart SSH
+      service:
+        name: sshd
+        state: restarted

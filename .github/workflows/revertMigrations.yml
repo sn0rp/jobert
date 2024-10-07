@@ -1,0 +1,42 @@
+name: Revert Database Migrations
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  check_and_revert:
+    if: "contains(github.event.head_commit.message, 'Revert') && !contains(github.event.head_commit.message, '[AUTOCOMMIT]')"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '7.4'
+
+      - name: Set up SSH key
+        uses: webfactory/ssh-agent@v0.5.0
+        with:
+          ssh-private-key: ${{ secrets.SERVER_SSH_KEY }}
+
+      - name: Add server to known hosts
+        run: ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts
+
+      - name: Identify migrations to revert
+        id: identify_migrations
+        run: |
+          REVERT_COMMIT=$(git rev-parse HEAD^)
+          ORIGINAL_COMMIT=$(git rev-parse HEAD^^)
+          MIGRATIONS_TO_REVERT=$(git diff --name-only $ORIGINAL_COMMIT..$REVERT_COMMIT -- migrations/*.php | xargs -n1 basename)
+          echo "MIGRATIONS_TO_REVERT=$MIGRATIONS_TO_REVERT" >> $GITHUB_ENV
+          echo "::set-output name=has_migrations::$([ -n "$MIGRATIONS_TO_REVERT" ] && echo 'true' || echo 'false')"
+
+      - name: Revert migrations on server
+        if: steps.identify_migrations.outputs.has_migrations == 'true'
+        run: |
+          ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} "cd ${{ secrets.APP_DIR }} && php migrate.php down '$MIGRATIONS_TO_REVERT'"
